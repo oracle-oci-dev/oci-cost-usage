@@ -14,8 +14,9 @@ Oracle-owned bling bucket (FOCUS Reports/YYYY/MM/DD/*.csv.gz)
 
 OCI generates cost reports every six hours, can delay data by up to 24 hours,
 and may split a report into `-00001`, `-00002`, etc. files. Therefore the
-function processes yesterday and the previous day by default, lists every gzip
-file in each date partition, and is safe to replay.
+function processes yesterday and the previous day by default. A missing source
+partition is reported as pending (not as an invocation failure) and is retried
+by the next rolling invocation.
 
 ## Contents
 
@@ -27,9 +28,9 @@ file in each date partition, and is safe to replay.
 ## Deployment method
 
 Use [DEPLOYMENT_INSTRUCTIONS.md](DEPLOYMENT_INSTRUCTIONS.md) as the production
-runbook. It uses OCI Cloud Shell and Fn Project CLI only; no laptop tooling is
-required. The `terraform/` directory is retained as an optional infrastructure
-reference, not as the primary deployment path.
+runbook. It supports both OCI Cloud Shell/Fn deployment and OCI Resource
+Manager. The `terraform/` directory is a Resource Manager-compatible stack for
+teams that want OCI-managed Terraform state.
 
 ## Terraform reference deployment
 
@@ -61,34 +62,44 @@ focus/csv/YYYY/MM/DD/<original>.csv
 manifests/YYYY/MM/DD.json
 ```
 
-The CSV is decompressed through a temporary file in chunks, then uploaded with
-the OCI SDK upload manager, which uses multipart upload when necessary. The raw
-gzip is also retained. Before either destination is written, the function checks
+The Function accepts the native `.csv.gz` packages plus `.zip` and plain `.csv`
+packages handled by Oracle's reference copier. CSV content is decompressed
+through a temporary file in chunks, then uploaded with the OCI SDK upload
+manager, which uses multipart upload when necessary. The raw package is also
+retained. Before either destination is written, the function checks
 for key FOCUS columns (`BillingAccountId`, `BilledCost`, and
 `ChargePeriodStart`). Any source, decompression, validation, or manifest failure
-fails the complete invocation; it never reports a partial run as successful.
+fails the invocation; an absent source date is the one intentional exception and
+is returned in `pending_dates` for the next rolling run.
 
 ## Daily scheduling
 
 Schedule a daily Function invocation at **04:00 UTC**, with the default empty
 request body, using the OCI Functions Console's **Create schedule** flow. OCI
 Resource Scheduler invokes scheduled functions in detached mode. After creating
-the schedule, copy its OCID and create a scheduler dynamic group:
+the schedule, copy its OCID and use the scheduler-principal policy from the
+Oracle A-Team article:
 
 ```text
-ALL {resource.type='resourceschedule', resource.id='<schedule_ocid>'}
-```
-
-Then grant that group permission to invoke Functions:
-
-```text
-Allow dynamic-group <focus-scheduler-dg> to manage functions-family in tenancy
+Allow any-user to manage functions-family in tenancy where all {
+  request.principal.type='resourceschedule',
+  request.principal.id='<schedule_ocid>'
+}
 ```
 
 The schedule is deliberately left out of Terraform because the OCI provider's
 generic Resource Scheduler schema does not cleanly express the Functions-console
 workflow. The deployed Function sets a 900-second detached timeout; increase it
 only after measuring real report partition sizes.
+
+## Oracle A-Team alignment
+
+This implementation follows Oracle's A-Team FOCUS export pattern: resource
+principal authentication, the `bling` reporting namespace, the tenancy OCID as
+the source bucket, the `FOCUS Reports/YYYY/MM/DD` prefix, daily scheduling, and
+the `usage-report` cross-tenancy endorsement. It deliberately adds streaming
+decompression, safe ZIP extraction, validation, idempotency, and manifests for
+production operation. See the [Oracle A-Team article](https://www.ateam-oracle.com/automating-the-export-of-oci-finops-open-cost-and-usage-specification-focus-reports-to-object-storage).
 
 ## SharePoint and Power BI
 

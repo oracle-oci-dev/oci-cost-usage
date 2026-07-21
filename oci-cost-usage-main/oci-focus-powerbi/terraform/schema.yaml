@@ -1,0 +1,19 @@
+title: OCI FOCUS to Object Storage
+description: Deploy the hardened implementation of Oracle's FOCUS report copier.
+schemaVersion: 1.1.0
+version: 1.0.0
+locale: en
+variableGroups:
+  - title: Required configuration
+    variables: [region, tenancy_ocid, compartment_ocid, function_subnet_ocids, function_image]
+  - title: Optional names
+    variables: [bucket_name, application_name, function_name]
+variables:
+  region: {type: string, title: Home region, required: true}
+  tenancy_ocid: {type: string, title: Tenancy OCID, required: true}
+  compartment_ocid: {type: string, title: Deployment compartment OCID, required: true}
+  function_subnet_ocids: {type: array, title: Function subnet OCIDs, required: true}
+  function_image: {type: string, title: Pre-built OCIR function image, required: true}
+  bucket_name: {type: string, title: Destination bucket name, default: oci-focus-powerbi}
+  application_name: {type: string, title: Functions application name, default: oci-focus-powerbi}
+  function_name: {type: string, title: Function name, default: oci-focus-exporter}

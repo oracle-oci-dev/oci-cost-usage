@@ -63,18 +63,18 @@ def list_month_csvs(client, namespace: str, bucket: str, month: date):
 def combine_csvs(client, namespace: str, bucket: str, objects) -> bytes:
     output = io.StringIO(newline="")
     writer = None
-    columns = None
+    source_columns = None
     rows = 0
     for obj in sorted(objects, key=lambda item: item.name):
         body = client.get_object(namespace, bucket, obj.name).data.content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(body))
         if not reader.fieldnames:
             continue
-        if columns is None:
-            columns = [*reader.fieldnames, "_source_object"]
-            writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\n")
+        if source_columns is None:
+            source_columns = reader.fieldnames
+            writer = csv.DictWriter(output, fieldnames=[*source_columns, "_source_object"], lineterminator="\n")
             writer.writeheader()
-        elif reader.fieldnames != columns:
+        elif reader.fieldnames != source_columns:
             raise RuntimeError(f"Schema mismatch in {obj.name}")
         for row in reader:
             # Preserve correction rows and provenance for Power BI deduplication.

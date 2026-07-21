@@ -13,8 +13,11 @@ import io
 import json
 import logging
 import os
+import shutil
 import tempfile
+import zipfile
 from datetime import date, datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from typing import Any, BinaryIO, Iterable
 
 import oci
@@ -78,6 +81,13 @@ def requested_dates(payload: dict[str, Any]) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
 
 
+def requested_force(payload: dict[str, Any]) -> bool:
+    force = payload.get("force", False)
+    if not isinstance(force, bool):
+        raise FocusExportError("force must be a JSON boolean")
+    return force
+
+
 def source_prefix(usage_date: date) -> str:
     return f"{SOURCE_PREFIX}/{usage_date:%Y/%m/%d}/"
 
@@ -90,7 +100,10 @@ def list_source_objects(client: Any, bucket: str, usage_date: date) -> list[Any]
     result = oci.pagination.list_call_get_all_results(
         client.list_objects, SOURCE_NAMESPACE, bucket, prefix=source_prefix(usage_date)
     )
-    objects = [obj for obj in result.data.objects if obj.name.endswith(".csv.gz")]
+    # The native report is normally .csv.gz.  ZIP and plain CSV support mirrors
+    # Oracle's reference copier and keeps the pipeline compatible with a future
+    # packaging change.
+    objects = [obj for obj in result.data.objects if obj.name.endswith((".csv.gz", ".csv", ".zip"))]
     return sorted(objects, key=lambda obj: obj.name)
 
 
@@ -152,6 +165,67 @@ def decompress_and_validate(gzip_path: str, csv_path: str) -> tuple[int, list[st
     return total, columns
 
 
+def validate_csv_path(csv_path: str) -> tuple[int, list[str]]:
+    """Validate a CSV already materialised on disk without loading its body."""
+    with open(csv_path, "rb") as stream:
+        header = stream.readline()
+    if not header:
+        raise FocusExportError("FOCUS file is empty")
+    try:
+        columns = header.decode("utf-8-sig").rstrip("\r\n").split(",")
+    except UnicodeDecodeError as exc:
+        raise FocusExportError("FOCUS header is not UTF-8 CSV") from exc
+    if not EXPECTED_COLUMNS.issubset(set(columns)):
+        raise FocusExportError("FOCUS file does not contain expected columns; found: " + ", ".join(columns[:20]))
+    return os.path.getsize(csv_path), columns
+
+
+def safe_zip_member_name(member_name: str) -> str:
+    """Return a relative archive member name, rejecting zip-slip paths."""
+    path = PurePosixPath(member_name)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise FocusExportError(f"Unsafe ZIP member path: {member_name}")
+    return "/".join(path.parts)
+
+
+def materialize_csvs(source_path: str, filename: str, directory: str) -> list[tuple[str, str, int]]:
+    """Produce validated CSV files from the packages accepted by Oracle's example."""
+    if filename.endswith(".csv.gz"):
+        csv_name = filename[:-3]
+        csv_path = os.path.join(directory, csv_name)
+        size, _ = decompress_and_validate(source_path, csv_path)
+        return [(csv_name, csv_path, size)]
+    if filename.endswith(".csv"):
+        size, _ = validate_csv_path(source_path)
+        return [(filename, source_path, size)]
+
+    extracted: list[tuple[str, str, int]] = []
+    try:
+        archive = zipfile.ZipFile(source_path)
+    except zipfile.BadZipFile as exc:
+        raise FocusExportError("Source .zip file is invalid") from exc
+    with archive:
+        for index, member in enumerate(archive.infolist()):
+            if member.is_dir() or not member.filename.endswith((".csv", ".csv.gz")):
+                continue
+            member_name = safe_zip_member_name(member.filename)
+            member_path = os.path.join(directory, f"zip-{index}")
+            with archive.open(member) as source, open(member_path, "wb") as destination:
+                shutil.copyfileobj(source, destination, length=CHUNK_BYTES)
+            if member_name.endswith(".gz"):
+                csv_name = member_name[:-3]
+                csv_path = os.path.join(directory, f"csv-{index}")
+                size, _ = decompress_and_validate(member_path, csv_path)
+            else:
+                csv_name = member_name
+                csv_path = member_path
+                size, _ = validate_csv_path(csv_path)
+            extracted.append((csv_name, csv_path, size))
+    if not extracted:
+        raise FocusExportError("ZIP source contains no CSV or CSV.GZ FOCUS files")
+    return extracted
+
+
 def process_object(
     client: Any,
     namespace: str,
@@ -163,20 +237,26 @@ def process_object(
 ) -> dict[str, Any]:
     filename = source.name.rsplit("/", 1)[-1]
     raw_name = f"{target_prefix('raw', usage_date)}/{filename}"
-    csv_name = f"{target_prefix('csv', usage_date)}/{filename[:-3]}"
-    if not force and metadata_matches(client, namespace, target_bucket, raw_name, source) and metadata_matches(client, namespace, target_bucket, csv_name, source):
-        return {"source": source.name, "raw": raw_name, "csv": csv_name, "status": "skipped", "bytes": 0}
-
     metadata = {"source-etag": str(source.etag), "source-size": str(source.size), "source-name": source.name}
     with tempfile.TemporaryDirectory(prefix="focus-") as directory:
         gzip_path = os.path.join(directory, filename)
-        csv_path = os.path.join(directory, filename[:-3])
         with open(gzip_path, "wb") as raw_file:
             download_to_path(client, source_bucket, source.name, raw_file)
-        total_bytes, _ = decompress_and_validate(gzip_path, csv_path)
+        csv_files = materialize_csvs(gzip_path, filename, directory)
+        csv_names = [
+            f"{target_prefix('csv', usage_date)}/{filename}/{csv_name}" if filename.endswith(".zip")
+            else f"{target_prefix('csv', usage_date)}/{csv_name}"
+            for csv_name, _, _ in csv_files
+        ]
+        matches = metadata_matches(client, namespace, target_bucket, raw_name, source) and all(
+            metadata_matches(client, namespace, target_bucket, csv_name, source) for csv_name in csv_names
+        )
+        if not force and matches:
+            return {"source": source.name, "raw": raw_name, "csv": csv_names, "status": "skipped", "bytes": 0}
         upload_file(client, namespace, target_bucket, raw_name, gzip_path, metadata)
-        upload_file(client, namespace, target_bucket, csv_name, csv_path, metadata)
-    return {"source": source.name, "raw": raw_name, "csv": csv_name, "status": "processed", "bytes": total_bytes}
+        for (_, csv_path, _), csv_name in zip(csv_files, csv_names):
+            upload_file(client, namespace, target_bucket, csv_name, csv_path, metadata)
+    return {"source": source.name, "raw": raw_name, "csv": csv_names, "status": "processed", "bytes": sum(item[2] for item in csv_files)}
 
 
 def write_manifest(client: Any, namespace: str, target_bucket: str, usage_date: date, files: list[dict[str, Any]]) -> str:
@@ -201,20 +281,25 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
         payload = parse_request(data)
         target_bucket = config("TARGET_BUCKET")
         target_namespace = os.environ.get("TARGET_NAMESPACE", "").strip()
-        force = bool(payload.get("force", False))
+        force = requested_force(payload)
         signer = oci.auth.signers.get_resource_principals_signer()
         client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
         namespace = target_namespace or client.get_namespace().data
         source_bucket = signer.tenancy_id
         dates = requested_dates(payload)
         manifests = []
+        pending_dates = []
         for usage_date in dates:
             sources = list_source_objects(client, source_bucket, usage_date)
             if not sources:
-                raise FocusExportError(f"No FOCUS .csv.gz files found for {usage_date}")
+                # OCI can publish a usage-day partition late.  Treat an absent
+                # partition as pending so the rolling invocation can retry it.
+                LOG.info("FOCUS report partition is not available yet: %s", usage_date)
+                pending_dates.append(usage_date.isoformat())
+                continue
             files = [process_object(client, namespace, source_bucket, target_bucket, usage_date, obj, force) for obj in sources]
             manifests.append(write_manifest(client, namespace, target_bucket, usage_date, files))
-        result = {"status": "complete", "dates": [item.isoformat() for item in dates], "manifests": manifests}
+        result = {"status": "complete", "dates": [item.isoformat() for item in dates], "pending_dates": pending_dates, "manifests": manifests}
         return response.Response(ctx, response_data=json.dumps(result), headers={"Content-Type": "application/json"}, status_code=200)
     except Exception as exc:  # FDK must receive a non-2xx response on any partial failure.
         LOG.exception("FOCUS export failed")

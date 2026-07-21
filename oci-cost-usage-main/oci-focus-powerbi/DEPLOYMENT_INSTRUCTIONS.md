@@ -1,8 +1,8 @@
 # OCI FOCUS v3: Cloud Shell-Only Deployment
 
-This is the only deployment runbook to use for this project. Every command is
-run inside **OCI Cloud Shell**. Do not install Docker, Terraform, Python, OCI
-CLI, or Fn on a Mac, Windows PC, or other laptop.
+Use OCI Cloud Shell for the command-driven path below. Alternatively, upload
+the `terraform/` directory as an OCI Resource Manager stack; Oracle's A-Team
+article now provides Resource Manager as a supported deployment route.
 
 ```text
 OCI Billing FOCUS reports in Oracle's bling bucket
@@ -277,15 +277,15 @@ oci iam dynamic-group create \
 ```
 
 Create a file named `focus-function-policy.json` in the Cloud Shell editor with
-this JSON array. Replace nothing in the `bling` OCID; replace only the shell
+this JSON array. Replace nothing in the `usage-report` OCID; replace only the shell
 variables with their actual values before saving:
 
 ```json
 [
   "Allow dynamic-group dg-oci-focus-exporter to read objectstorage-namespaces in tenancy",
   "Allow dynamic-group dg-oci-focus-exporter to manage objects in compartment id <COMPARTMENT_OCID> where target.bucket.name = 'oci-focus-powerbi'",
-  "Define tenancy bling as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq",
-  "Endorse dynamic-group dg-oci-focus-exporter to read objects in tenancy bling"
+  "Define tenancy usage-report as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq",
+  "Endorse dynamic-group dg-oci-focus-exporter to read objects in tenancy usage-report"
 ]
 ```
 
@@ -336,7 +336,7 @@ Expected result:
 
 If the result is an authorization failure, do not weaken the IAM policy. Check
 the Function's home region, Service Gateway route, Function OCID in the dynamic
-group, bucket name in the policy, `bling` endorsement, and IAM propagation time.
+group, bucket name in the policy, `usage-report` endorsement, and IAM propagation time.
 
 ## 9. Validate the data in the destination bucket
 
@@ -410,11 +410,12 @@ oci iam dynamic-group create \
   --matching-rule "ALL {resource.type='resourceschedule', resource.id='${SCHEDULE_OCID}'}"
 ```
 
-Create `focus-scheduler-policy.json` in the Cloud Shell editor:
+Create `focus-scheduler-policy.json` in the Cloud Shell editor. This is the
+schedule-principal policy pattern used in Oracle's A-Team article:
 
 ```json
 [
-  "Allow dynamic-group dg-oci-focus-scheduler to manage functions-family in tenancy"
+  "Allow any-user to manage functions-family in tenancy where all {request.principal.type='resourceschedule', request.principal.id='<SCHEDULE_OCID>'}"
 ]
 ```
 
