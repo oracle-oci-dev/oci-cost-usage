@@ -1,0 +1,20 @@
+// Power BI: Get Data > SharePoint Folder, then replace the site URL below.
+// This retains correction rows and marks source-file provenance for auditing.
+let
+    Source = SharePoint.Files("https://contoso.sharepoint.com/sites/FinOps", [ApiVersion = 15]),
+    FocusFile = Table.SelectRows(Source, each [Name] = "oci_focus_current_month.csv"),
+    Content = FocusFile{0}[Content],
+    Csv = Csv.Document(Content, [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+    Promoted = Table.PromoteHeaders(Csv, [PromoteAllScalars = true]),
+    Typed = Table.TransformColumnTypes(Promoted, {
+        {"BilledCost", Currency.Type}, {"EffectiveCost", Currency.Type},
+        {"ListCost", Currency.Type}, {"ContractedCost", Currency.Type},
+        {"BilledQuantity", type number}, {"ChargePeriodStart", type datetimezone},
+        {"ChargePeriodEnd", type datetimezone}, {"BillingPeriodStart", type datetimezone},
+        {"BillingPeriodEnd", type datetimezone}, {"ResourceId", type text}
+    }, "en-US"),
+    // Do not filter correction rows. Reconcile lineItem/IsCorrection and
+    // lineItem/BackReference in measures where a corrected net view is needed.
+    Result = Typed
+in
+    Result

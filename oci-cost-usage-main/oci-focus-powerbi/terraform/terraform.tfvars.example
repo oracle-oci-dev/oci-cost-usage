@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and replace every value. Do not commit terraform.tfvars.
+region                  = "us-ashburn-1"
+tenancy_ocid            = "ocid1.tenancy.oc1..replace-me"
+compartment_ocid        = "ocid1.compartment.oc1..replace-me"
+function_subnet_ocids   = ["ocid1.subnet.oc1.iad.replace-me"]
+function_image          = "iad.ocir.io/<object-storage-namespace>/oci-focus-exporter:0.1.0"
+bucket_name             = "oci-focus-powerbi"
+application_name        = "oci-focus-powerbi"
+function_name           = "oci-focus-exporter"
