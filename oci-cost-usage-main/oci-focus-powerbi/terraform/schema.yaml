@@ -8,6 +8,8 @@ variableGroups:
     variables: [region, tenancy_ocid, compartment_ocid, function_subnet_ocids, function_image]
   - title: Optional names
     variables: [bucket_name, application_name, function_name]
+  - title: Optional weekly Power BI publisher
+    variables: [delivery_function_image, delivery_function_name]
 variables:
   region: {type: string, title: Home region, required: true}
   tenancy_ocid: {type: string, title: Tenancy OCID, required: true}
@@ -17,3 +19,5 @@ variables:
   bucket_name: {type: string, title: Destination bucket name, default: oci-focus-powerbi}
   application_name: {type: string, title: Functions application name, default: oci-focus-powerbi}
   function_name: {type: string, title: Function name, default: oci-focus-exporter}
+  delivery_function_image: {type: string, title: Pre-built OCIR delivery-function image (leave blank to skip), default: ""}
+  delivery_function_name: {type: string, title: Delivery function name, default: oci-focus-delivery}

@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -10,6 +11,9 @@ import unittest
 oci_stub = types.ModuleType("oci")
 oci_stub.object_storage = types.SimpleNamespace(models=types.SimpleNamespace())
 sys.modules.setdefault("oci", oci_stub)
+fdk_stub = types.ModuleType("fdk")
+fdk_stub.response = types.SimpleNamespace(Response=lambda *args, **kwargs: None)
+sys.modules.setdefault("fdk", fdk_stub)
 
 
 MODULE = pathlib.Path(__file__).parents[1] / "focus_to_sharepoint.py"
@@ -105,6 +109,48 @@ class CombineCsvTests(unittest.TestCase):
         self.assertEqual(captured["access_type"], "ObjectRead")
         self.assertEqual(captured["object_name"], publisher.CSV_OBJECT_NAME)
         self.assertEqual(result["url"], "https://objectstorage.us-ashburn-1.oraclecloud.com/p/token/n/ns/b/bucket/o/powerbi/file.csv")
+
+    def test_parse_request_rejects_invalid_json(self):
+        with self.assertRaises(SystemExit):
+            publisher.parse_request(io.BytesIO(b"not json"))
+
+    def test_parse_request_defaults_empty_body_to_empty_dict(self):
+        self.assertEqual(publisher.parse_request(None), {})
+        self.assertEqual(publisher.parse_request(io.BytesIO(b"")), {})
+
+    def test_handler_parses_week_start_and_returns_runs_manifest(self):
+        captured = {}
+        original_run, original_response = publisher.run, publisher.response.Response
+        try:
+            def fake_run(week_start, rotate_par):
+                captured["week_start"] = week_start
+                captured["rotate_par"] = rotate_par
+                return {"powerbi_url": "https://example/par"}
+
+            publisher.run = fake_run
+            publisher.response.Response = lambda _ctx, response_data, **_kwargs: json.loads(response_data)
+            result = publisher.handler(None, io.BytesIO(b'{"week_start":"2026-07-13","rotate_par":true}'))
+        finally:
+            publisher.run, publisher.response.Response = original_run, original_response
+
+        self.assertEqual(captured["week_start"], __import__("datetime").date(2026, 7, 13))
+        self.assertTrue(captured["rotate_par"])
+        self.assertEqual(result["powerbi_url"], "https://example/par")
+
+    def test_handler_returns_failed_status_on_error(self):
+        original_run, original_response = publisher.run, publisher.response.Response
+        try:
+            def failing_run(week_start, rotate_par):
+                raise RuntimeError("boom")
+
+            publisher.run = failing_run
+            publisher.response.Response = lambda _ctx, response_data, **_kwargs: json.loads(response_data)
+            result = publisher.handler(None, io.BytesIO(b"{}"))
+        finally:
+            publisher.run, publisher.response.Response = original_run, original_response
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("boom", result["error"])
 
 
 if __name__ == "__main__":

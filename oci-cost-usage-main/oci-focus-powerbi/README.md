@@ -22,7 +22,8 @@ by the next rolling invocation.
 
 - `function/`: the deployable Python OCI Function and its tests.
 - `terraform/`: bucket, Function application/function, dynamic group and IAM.
-- `delivery/`: optional weekly Object Storage publisher and PAR creator.
+- `delivery/`: optional weekly Object Storage publisher and PAR creator,
+  deployable as its own Function (`func.yaml`/`Dockerfile`) or run as a CLI.
 - `powerbi/`: a starting Power Query query and data-model guidance.
 
 ## Deployment method
@@ -118,7 +119,26 @@ The PAR grants time-bound read access to only
 `powerbi/oci_focus_previous_week.csv`; because the object name is stable, the
 same PAR URL keeps working when later weekly runs overwrite that object.
 
-Required environment variables:
+`delivery/focus_to_sharepoint.py` exposes both an OCI Function handler and a CLI
+entry point around the same `run()` logic:
+
+- **As a Function (production):** deployed as a second Function in the same
+  `oci-focus-powerbi` app (`delivery/func.yaml`, `delivery/Dockerfile`), on its
+  own weekly schedule, under its own dynamic group
+  (`dg-oci-focus-delivery`) and least-privilege policy
+  (`policy-oci-focus-delivery`) that is separate from the daily copier's. This
+  is required because `oci.auth.signers.get_resource_principals_signer()` only
+  resolves inside a resource-principal-eligible OCI service — it does not work
+  from Cloud Shell or a laptop. See [DEPLOYMENT_INSTRUCTIONS.md](DEPLOYMENT_INSTRUCTIONS.md)
+  Step 12 for the exact commands, or `terraform/` with `delivery_function_image`
+  set.
+- **As a CLI (manual/testing):** from anywhere with an active resource or
+  instance principal, run `python focus_to_sharepoint.py --week-start
+  2026-07-13`. Omit `--week-start` to publish the previous completed UTC week.
+  Use `--rotate-par` only when you need to issue a new URL before the stored
+  PAR is near expiry.
+
+Required environment variables (both modes):
 
 ```text
 TARGET_BUCKET TARGET_NAMESPACE(optional)
@@ -126,23 +146,21 @@ PAR_TTL_DAYS(optional, default 90)
 OCI_REGION or OBJECT_STORAGE_ENDPOINT(optional if the SDK endpoint is available)
 ```
 
-Install `delivery/requirements.txt`, then run
-`python focus_to_sharepoint.py --week-start 2026-07-13`. Omit `--week-start` to
-publish the previous completed UTC week. Use `--rotate-par` only when you need
-to issue a new URL before the stored PAR is near expiry.
+Install `delivery/requirements.txt` before running either mode.
 
-The script prints a JSON manifest containing `powerbi_url`. In Power BI Desktop,
-create a text parameter named `OCI_FOCUS_PAR_URL`, paste that URL, then use
-`powerbi/power-query-m.txt`. Treat the PAR URL like a secret: anyone who has it
-can read the weekly CSV until the PAR expires or is deleted. Cost values should
-be fixed decimals and dates UTC. Do not remove correction rows. Reconcile
-`lineItem/iscorrection` and `lineItem/backReference` in a measure if a netted
-presentation is required.
+Both modes print/return a JSON manifest containing `powerbi_url`. In Power BI
+Desktop, create a text parameter named `OCI_FOCUS_PAR_URL`, paste that URL,
+then use `powerbi/power-query-m.txt`. Treat the PAR URL like a secret: anyone
+who has it can read the weekly CSV until the PAR expires or is deleted. Cost
+values should be fixed decimals and dates UTC. Do not remove correction rows.
+Reconcile `lineItem/iscorrection` and `lineItem/backReference` in a measure if
+a netted presentation is required.
 
 ## Verify before production
 
 ```bash
 python3 -m unittest discover -s function/tests -v
+python3 -m unittest discover -s delivery/tests -v
 ```
 
 Then check one manual run: every source gzip has both a `raw` and `csv` target,

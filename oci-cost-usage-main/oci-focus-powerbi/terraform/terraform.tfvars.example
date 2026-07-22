@@ -7,3 +7,7 @@ function_image          = "iad.ocir.io/<object-storage-namespace>/oci-focus-expo
 bucket_name             = "oci-focus-powerbi"
 application_name        = "oci-focus-powerbi"
 function_name           = "oci-focus-exporter"
+# Optional: build and push ../delivery as its own OCIR image, then set this to deploy
+# the weekly PAR/Power BI publisher as a second function. Leave blank to skip it.
+delivery_function_image = ""
+delivery_function_name  = "oci-focus-delivery"

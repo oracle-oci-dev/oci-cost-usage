@@ -13,12 +13,16 @@ import argparse
 import csv
 import io
 import json
+import logging
 import os
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import oci
+from fdk import response
+
+LOG = logging.getLogger(__name__)
 
 CSV_OBJECT_NAME = "powerbi/oci_focus_previous_week.csv"
 MANIFEST_OBJECT_NAME = "powerbi/oci_focus_manifest.json"
@@ -201,14 +205,11 @@ def par_ttl_days() -> int:
     return ttl
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--week-start", help="UTC Monday to publish, YYYY-MM-DD; default is the previous completed week")
-    parser.add_argument("--rotate-par", action="store_true", help="Create a fresh PAR URL even if the stored one is still valid")
-    args = parser.parse_args()
-    week_start = datetime.strptime(args.week_start, "%Y-%m-%d").date() if args.week_start else completed_week_start()
+def run(week_start: date | None, rotate_par: bool) -> dict[str, Any]:
+    """Combine one UTC week of daily FOCUS CSVs, publish it, and (re)issue its PAR."""
+    week_start = week_start or completed_week_start()
     if week_start.weekday() != 0:
-        raise SystemExit("--week-start must be a Monday")
+        raise SystemExit("week_start must be a Monday")
 
     usage_dates = [week_start + timedelta(days=offset) for offset in range(7)]
     client, namespace = storage_client()
@@ -220,7 +221,7 @@ def main() -> None:
         rows = combine_csvs(client, namespace, bucket, objects, csv_path)
         upload_file(client, namespace, bucket, CSV_OBJECT_NAME, csv_path, "text/csv")
 
-    par = get_or_create_par(client, namespace, bucket, par_ttl_days(), args.rotate_par)
+    par = get_or_create_par(client, namespace, bucket, par_ttl_days(), rotate_par)
     manifest = {
         "week_start": week_start.isoformat(),
         "week_end": usage_dates[-1].isoformat(),
@@ -233,7 +234,47 @@ def main() -> None:
         "published_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     put_json(client, namespace, bucket, MANIFEST_OBJECT_NAME, manifest)
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--week-start", help="UTC Monday to publish, YYYY-MM-DD; default is the previous completed week")
+    parser.add_argument("--rotate-par", action="store_true", help="Create a fresh PAR URL even if the stored one is still valid")
+    args = parser.parse_args()
+    week_start = datetime.strptime(args.week_start, "%Y-%m-%d").date() if args.week_start else None
+    manifest = run(week_start, args.rotate_par)
     print(json.dumps(manifest, indent=2, sort_keys=True))
+
+
+def parse_request(data: io.BytesIO | None) -> dict[str, Any]:
+    """Mirrors function/func.py's request parsing so both Functions behave the same way."""
+    if not data:
+        return {}
+    raw = data.getvalue().decode("utf-8").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON request body: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit("Request body must be a JSON object")
+    return parsed
+
+
+def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
+    """OCI Function entry point: deploy this alongside func.py as a second function
+    in the same app so it gets its own dynamic group and least-privilege PAR policy."""
+    try:
+        payload = parse_request(data)
+        week_start = datetime.strptime(payload["week_start"], "%Y-%m-%d").date() if payload.get("week_start") else None
+        rotate_par = bool(payload.get("rotate_par", False))
+        manifest = run(week_start, rotate_par)
+        return response.Response(ctx, response_data=json.dumps(manifest), headers={"Content-Type": "application/json"}, status_code=200)
+    except Exception as exc:  # FDK must receive a non-2xx response on any failure.
+        LOG.exception("FOCUS weekly delivery failed")
+        return response.Response(ctx, response_data=json.dumps({"status": "failed", "error": str(exc)}), headers={"Content-Type": "application/json"}, status_code=500)
 
 
 if __name__ == "__main__":

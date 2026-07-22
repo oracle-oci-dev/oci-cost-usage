@@ -70,7 +70,8 @@ Run the project tests in Cloud Shell:
 python3 -m unittest discover -s function/tests -v
 ```
 
-All three tests must pass before deployment.
+All tests must pass before deployment (7 function tests as of this writing; run
+`python3 -m unittest discover -s delivery/tests -v` too if you plan to use Step 12).
 
 ## 2. Set the deployment values in Cloud Shell
 
@@ -289,6 +290,11 @@ variables with their actual values before saving:
 ]
 ```
 
+This dynamic group is scoped to the daily copier only. It intentionally does **not**
+get PAR-creation rights: the optional weekly Power BI publisher in Step 12 runs as its
+own Function with its own dynamic group, so a compromised or buggy copier can never
+mint a read URL into the bucket.
+
 Create the policy at tenancy scope:
 
 ```bash
@@ -443,20 +449,119 @@ memory or detached timeout only after observing actual report size and runtime.
 
 ## 12. Optional Object Storage PAR and Power BI delivery
 
-Do this only after the FOCUS copy workload has run successfully for seven days.
-The weekly publisher is a separate OCI workload:
+Do this only after the daily copy Function has run successfully for seven days
+and you have compared `BilledCost` against OCI Cost Analysis.
 
-`delivery/focus_to_sharepoint.py`
+The weekly publisher, `delivery/focus_to_sharepoint.py`, combines the previous
+completed UTC week's daily CSVs into `powerbi/oci_focus_previous_week.csv` in
+the same private bucket, then creates or reuses a pre-authenticated request
+(PAR) URL for that exact object. It fails closed unless all seven daily
+manifests say `"status": "complete"`.
 
-The filename is kept for compatibility with earlier runs, but the active flow
-is Object Storage plus PAR. The job combines the previous completed UTC week,
-writes `powerbi/oci_focus_previous_week.csv` to the private bucket, and creates
-or reuses a pre-authenticated request URL for that exact object.
+It is deployed as a **second Function in the same application**, with its own
+dynamic group and policy. It intentionally does not reuse `dg-oci-focus-exporter`:
+that identity can read Oracle's `bling` bucket, and a PAR-creation bug or
+compromise in that identity would be far more dangerous than in a
+delivery-only identity that only ever touches your own bucket.
 
-Set `TARGET_BUCKET`; optionally set `TARGET_NAMESPACE`, `PAR_TTL_DAYS`, and
-`OCI_REGION` or `OBJECT_STORAGE_ENDPOINT` if the SDK endpoint cannot be
-discovered. Keep the generated PAR URL out of source control and chat logs
-unless you are intentionally handing it to Power BI.
+Run the delivery tests first, from `oci-focus-powerbi`:
+
+```bash
+python3 -m unittest discover -s delivery/tests -v
+```
+
+Deploy it into the existing app (the Fn context from Step 6 is still active):
+
+```bash
+export DELIVERY_FUNCTION_NAME='oci-focus-delivery'
+export DELIVERY_DG='dg-oci-focus-delivery'
+export DELIVERY_POLICY='policy-oci-focus-delivery'
+
+cd ~/oci-cost-usage/oci-focus-powerbi/delivery
+fn deploy --app "${APP_NAME}"
+
+fn config function "${APP_NAME}" "${DELIVERY_FUNCTION_NAME}" \
+  TARGET_BUCKET "${FOCUS_BUCKET}"
+
+export DELIVERY_FUNCTION_OCID="$(fn inspect function "${APP_NAME}" "${DELIVERY_FUNCTION_NAME}" | jq -r '.id')"
+
+oci fn function update \
+  --function-id "${DELIVERY_FUNCTION_OCID}" \
+  --detached-mode-timeout-in-seconds 900
+```
+
+Optionally set `TARGET_NAMESPACE`, `PAR_TTL_DAYS` (default 90, minimum 14), and
+`OCI_REGION` or `OBJECT_STORAGE_ENDPOINT` the same way if the SDK endpoint
+cannot be auto-discovered inside the Function.
+
+Create the delivery Function's dynamic group and least-privilege policy:
+
+```bash
+oci iam dynamic-group create \
+  --compartment-id "${TENANCY_OCID}" \
+  --name "${DELIVERY_DG}" \
+  --description 'Resource principal for the weekly FOCUS Object Storage PAR / Power BI publisher' \
+  --matching-rule "ALL {resource.type = 'fnfunc', resource.id = '${DELIVERY_FUNCTION_OCID}'}"
+```
+
+Create `focus-delivery-policy.json` in the Cloud Shell editor:
+
+```json
+[
+  "Allow dynamic-group dg-oci-focus-delivery to read objectstorage-namespaces in tenancy",
+  "Allow dynamic-group dg-oci-focus-delivery to manage objects in compartment id <COMPARTMENT_OCID> where target.bucket.name = 'oci-focus-powerbi'",
+  "Allow dynamic-group dg-oci-focus-delivery to manage buckets in compartment id <COMPARTMENT_OCID> where all {target.bucket.name = 'oci-focus-powerbi', request.permission = 'PAR_MANAGE'}"
+]
+```
+
+The third statement is what authorizes `create_preauthenticated_request` in
+`delivery/focus_to_sharepoint.py`. Confirm `PAR_MANAGE` against OCI's current
+Object Storage policy reference before relying on it in production and verify
+with a real PAR creation call below — a wrong permission name in a `where`
+condition fails silently (grants nothing) rather than raising a policy error.
+
+```bash
+oci iam policy create \
+  --compartment-id "${TENANCY_OCID}" \
+  --name "${DELIVERY_POLICY}" \
+  --description 'Least-privilege Object Storage and PAR access for the weekly FOCUS Power BI publisher' \
+  --statements file://focus-delivery-policy.json
+```
+
+Wait approximately 15 minutes for IAM propagation, same as Step 7.
+
+Pick a UTC Monday where all seven prior daily manifests already show
+`"status": "complete"` (check with the object-list commands from Step 9) and
+run a manual test:
+
+```bash
+oci --read-timeout 330 fn function invoke \
+  --function-id "${DELIVERY_FUNCTION_OCID}" \
+  --file delivery-response.json \
+  --body '{"week_start":"2026-07-13"}'
+
+cat delivery-response.json
+```
+
+Expect a JSON body containing `"powerbi_url"`. If it fails with an
+authorization error, do not widen the policy beyond the statements above;
+recheck the Function OCID in the dynamic group, the bucket name, and IAM
+propagation time. If it fails with "FOCUS partition is not ready", pick a
+week whose seven manifests are already complete, or wait for the daily copier
+to catch up.
+
+Keep the printed PAR URL out of source control and chat logs unless you are
+intentionally handing it to Power BI; treat it like a secret; anyone holding
+it can read the weekly CSV until the PAR expires.
+
+Create the weekly schedule the same way as Step 10 (Functions Console >
+`oci-focus-powerbi` > `oci-focus-delivery` > **More actions > Create
+schedule**), at **05:00 UTC every Monday** — one hour after the daily
+copier's 04:00 UTC run has had a chance to complete Sunday's rolling window.
+Leave the request body empty; the Function defaults to the previous completed
+UTC week. This schedule needs its own scheduler dynamic group, following the
+same pattern as Step 10 with a distinct name (for example
+`dg-oci-focus-delivery-scheduler`) and its own schedule OCID.
 
 In Power BI Desktop, create a text parameter named `OCI_FOCUS_PAR_URL`, paste
 the `powerbi_url` from the job output, and start from:

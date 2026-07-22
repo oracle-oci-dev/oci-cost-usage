@@ -20,3 +20,14 @@ variable "function_name" {
   type    = string
   default = "oci-focus-exporter"
 }
+
+variable "delivery_function_image" {
+  type        = string
+  default     = ""
+  description = "Pre-built OCIR image for delivery/focus_to_sharepoint.py, for example iad.ocir.io/<namespace>/oci-focus-delivery:0.1.0. Leave empty to skip deploying the optional weekly PAR/Power BI publisher."
+}
+
+variable "delivery_function_name" {
+  type    = string
+  default = "oci-focus-delivery"
+}
