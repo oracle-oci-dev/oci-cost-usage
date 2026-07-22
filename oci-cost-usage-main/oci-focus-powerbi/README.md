@@ -103,10 +103,11 @@ production operation. See the [Oracle A-Team article](https://www.ateam-oracle.c
 
 ## SharePoint and Power BI
 
-The optional delivery job combines the current month’s CSV partitions and writes
-`oci_focus_current_month.csv` plus `oci_focus_manifest.json` to SharePoint. Run
-it only after one or more daily manifests are complete. It uses its own resource
-principal and needs the same read permission on the target bucket.
+The optional delivery job combines the previous completed UTC calendar week and
+writes `oci_focus_previous_week.csv` plus `oci_focus_manifest.json` to
+SharePoint. It fails closed unless all seven daily copier manifests are complete.
+It uses its own resource principal and needs the same read permission on the
+target bucket.
 
 Required environment variables:
 
@@ -117,10 +118,11 @@ SP_HOSTNAME SP_SITE_PATH SP_LIBRARY_NAME SP_FOLDER_PATH(optional)
 ```
 
 Install `delivery/requirements.txt`, then run
-`python focus_to_sharepoint.py --month 2026-07`. For production, store the
-Microsoft secret in OCI Vault and inject it at runtime. The current publisher
-uses Graph's simple-upload API and refuses payloads over 250 MB; add an upload
-session implementation before publishing a larger month.
+`python focus_to_sharepoint.py --week-start 2026-07-13`. Omit `--week-start` to
+publish the previous completed UTC week. For production, store the Microsoft
+secret in OCI Vault and inject it at runtime. The publisher streams to a
+temporary file and uses Graph upload sessions, so it does not have the 250 MB
+simple-upload limit.
 
 In Power BI Desktop, use the SharePoint Folder connector and adapt
 `powerbi/power-query-m.txt`. Cost values should be fixed decimals and dates UTC.
