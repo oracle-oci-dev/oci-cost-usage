@@ -1,10 +1,14 @@
 # SharePoint / Microsoft Entra setup
 
-What you need on the Microsoft side to let the OCI cost pipeline upload CSVs to
-a SharePoint document library for Power BI.
+Legacy note: the active v3 pipeline now publishes the weekly CSV to OCI Object
+Storage and gives Power BI a PAR URL. Use this document only if you deliberately
+choose the older SharePoint delivery path.
 
-Applies to all versions of the pipeline (v1, v2, and the v3 FOCUS delivery
-script) — they all use the same app-only Microsoft Graph upload.
+What you need on the Microsoft side to let the older OCI cost pipelines upload
+CSVs to a SharePoint document library for Power BI.
+
+Applies to v1, v2, and any custom legacy SharePoint delivery script. It does
+not apply to the active v3 Object Storage PAR delivery.
 
 ---
 

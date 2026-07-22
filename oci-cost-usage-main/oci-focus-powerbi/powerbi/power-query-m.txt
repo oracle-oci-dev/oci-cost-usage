@@ -1,10 +1,9 @@
-// Power BI: Get Data > SharePoint Folder, then replace the site URL below.
-// This retains correction rows and marks source-file provenance for auditing.
+// Power BI: create a text parameter named OCI_FOCUS_PAR_URL and paste the
+// powerbi_url value printed by delivery/focus_to_sharepoint.py.
+// The PAR points to powerbi/oci_focus_previous_week.csv in OCI Object Storage.
 let
-    Source = SharePoint.Files("https://contoso.sharepoint.com/sites/FinOps", [ApiVersion = 15]),
-    FocusFile = Table.SelectRows(Source, each [Name] = "oci_focus_previous_week.csv"),
-    Content = FocusFile{0}[Content],
-    Csv = Csv.Document(Content, [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+    Source = Web.Contents(OCI_FOCUS_PAR_URL),
+    Csv = Csv.Document(Source, [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
     Promoted = Table.PromoteHeaders(Csv, [PromoteAllScalars = true]),
     Typed = Table.TransformColumnTypes(Promoted, {
         {"BilledCost", Currency.Type}, {"EffectiveCost", Currency.Type},

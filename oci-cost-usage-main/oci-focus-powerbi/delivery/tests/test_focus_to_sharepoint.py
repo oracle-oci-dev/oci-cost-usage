@@ -7,7 +7,9 @@ import types
 import unittest
 
 
-sys.modules.setdefault("oci", types.ModuleType("oci"))
+oci_stub = types.ModuleType("oci")
+oci_stub.object_storage = types.SimpleNamespace(models=types.SimpleNamespace())
+sys.modules.setdefault("oci", oci_stub)
 
 
 MODULE = pathlib.Path(__file__).parents[1] / "focus_to_sharepoint.py"
@@ -59,42 +61,50 @@ class CombineCsvTests(unittest.TestCase):
         objects = publisher.completed_day_objects(client, "namespace", "bucket", usage_date)
         self.assertEqual([item.name for item in objects], ["focus/csv/2026/07/13/report.csv"])
 
-    def test_find_drive_follows_graph_pagination(self):
-        original = publisher.graph_request
-        calls = []
-        pages = [
-            {"value": [{"name": "Other"}], "@odata.nextLink": "https://next.example/drives"},
-            {"value": [{"id": "drive-id", "name": "Reports"}]},
-        ]
+    def test_existing_par_metadata_reuses_a_valid_stored_url(self):
+        expires = (__import__("datetime").datetime.now(__import__("datetime").timezone.utc) + __import__("datetime").timedelta(days=30)).isoformat()
+        metadata = {"url": "https://objectstorage.example/p/token", "object_name": publisher.CSV_OBJECT_NAME, "expires_at": expires}
+
+        class Client:
+            def get_object(self, namespace, bucket, name):
+                self.requested_name = name
+                return types.SimpleNamespace(data=types.SimpleNamespace(content=json.dumps(metadata).encode()))
+
+        client = Client()
+        result = publisher.existing_par_metadata(client, "namespace", "bucket")
+        self.assertEqual(result["url"], metadata["url"])
+        self.assertEqual(client.requested_name, publisher.PAR_OBJECT_NAME)
+
+    def test_create_object_read_par_builds_powerbi_url(self):
+        captured = {}
+        original_models = getattr(publisher.oci.object_storage, "models", None)
+
+        class Details:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.name = kwargs["name"]
+
+        class Client:
+            base_client = types.SimpleNamespace(endpoint="https://objectstorage.us-ashburn-1.oraclecloud.com")
+
+            def create_preauthenticated_request(self, namespace, bucket, details):
+                self.namespace = namespace
+                self.bucket = bucket
+                self.details = details
+                return types.SimpleNamespace(data=types.SimpleNamespace(access_uri="/p/token/n/ns/b/bucket/o/powerbi/file.csv", name=details.name, id="par-id"))
+
         try:
-            def graph_request(method, url, token):
-                calls.append(url)
-                return types.SimpleNamespace(json=lambda: pages.pop(0))
-
-            publisher.graph_request = graph_request
-            drive = publisher.find_drive("token", "site-id", "reports")
+            publisher.oci.object_storage.models = types.SimpleNamespace(CreatePreauthenticatedRequestDetails=Details)
+            result = publisher.create_object_read_par(Client(), "namespace", "bucket", 30)
         finally:
-            publisher.graph_request = original
-        self.assertEqual(drive["id"], "drive-id")
-        self.assertEqual(len(calls), 2)
+            if original_models is None:
+                delattr(publisher.oci.object_storage, "models")
+            else:
+                publisher.oci.object_storage.models = original_models
 
-    def test_request_with_retry_retries_throttling(self):
-        original_sleep = publisher.time.sleep
-        attempts = []
-        try:
-            publisher.time.sleep = lambda _: None
-
-            def send():
-                attempts.append(None)
-                if len(attempts) == 1:
-                    return types.SimpleNamespace(status_code=429, headers={}, raise_for_status=lambda: None)
-                return types.SimpleNamespace(status_code=200, headers={}, raise_for_status=lambda: None)
-
-            response = publisher.request_with_retry(send)
-        finally:
-            publisher.time.sleep = original_sleep
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(attempts), 2)
+        self.assertEqual(captured["access_type"], "ObjectRead")
+        self.assertEqual(captured["object_name"], publisher.CSV_OBJECT_NAME)
+        self.assertEqual(result["url"], "https://objectstorage.us-ashburn-1.oraclecloud.com/p/token/n/ns/b/bucket/o/powerbi/file.csv")
 
 
 if __name__ == "__main__":

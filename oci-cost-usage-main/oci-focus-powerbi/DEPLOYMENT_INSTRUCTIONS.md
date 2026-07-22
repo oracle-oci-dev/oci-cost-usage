@@ -9,7 +9,7 @@ OCI Billing FOCUS reports in Oracle's bling bucket
   -> OCI Function deployed from Cloud Shell
   -> private bucket in your tenancy
   -> raw gzip copies, CSV copies, and manifests
-  -> optional SharePoint and Power BI delivery later
+  -> optional weekly CSV object and PAR URL for Power BI
 ```
 
 The Function reads Oracle's already-generated FOCUS reports. It does not use
@@ -441,18 +441,25 @@ corrections as additional records.
 Use OCI Console Function logs and invocation details for failures. Increase the
 memory or detached timeout only after observing actual report size and runtime.
 
-## 12. Optional SharePoint and Power BI delivery
+## 12. Optional Object Storage PAR and Power BI delivery
 
 Do this only after the FOCUS copy workload has run successfully for seven days.
-The SharePoint publisher is a separate workload:
+The weekly publisher is a separate OCI workload:
 
 `delivery/focus_to_sharepoint.py`
 
-Run it from a separate, scheduled OCI workload with its Microsoft credentials
-stored in OCI Vault. Never put `MS_CLIENT_SECRET` in Cloud Shell command
-history, source control, or Function configuration.
+The filename is kept for compatibility with earlier runs, but the active flow
+is Object Storage plus PAR. The job combines the previous completed UTC week,
+writes `powerbi/oci_focus_previous_week.csv` to the private bucket, and creates
+or reuses a pre-authenticated request URL for that exact object.
 
-Use the SharePoint Folder connector in Power BI and start from:
+Set `TARGET_BUCKET`; optionally set `TARGET_NAMESPACE`, `PAR_TTL_DAYS`, and
+`OCI_REGION` or `OBJECT_STORAGE_ENDPOINT` if the SDK endpoint cannot be
+discovered. Keep the generated PAR URL out of source control and chat logs
+unless you are intentionally handing it to Power BI.
+
+In Power BI Desktop, create a text parameter named `OCI_FOCUS_PAR_URL`, paste
+the `powerbi_url` from the job output, and start from:
 
 `powerbi/power-query-m.txt`
 

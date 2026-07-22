@@ -1,4 +1,4 @@
-# OCI native FOCUS → Object Storage → SharePoint → Power BI (v3)
+# OCI native FOCUS -> Object Storage -> PAR -> Power BI (v3)
 
 v3 replaces the older Usage API extracts with an OCI Function that copies the
 native FOCUS files Oracle already generates. It does not re-create cost
@@ -8,8 +8,8 @@ calculations or discard correction rows.
 Oracle-owned bling bucket (FOCUS Reports/YYYY/MM/DD/*.csv.gz)
   -> OCI Function (resource principal)
   -> private customer bucket (raw, csv, manifests)
-  -> optional SharePoint stable file
-  -> Power BI
+  -> weekly stable CSV object + PAR URL
+  -> Power BI Web connector
 ```
 
 OCI generates cost reports every six hours, can delay data by up to 24 hours,
@@ -22,7 +22,7 @@ by the next rolling invocation.
 
 - `function/`: the deployable Python OCI Function and its tests.
 - `terraform/`: bucket, Function application/function, dynamic group and IAM.
-- `delivery/`: optional separate SharePoint publisher.
+- `delivery/`: optional weekly Object Storage publisher and PAR creator.
 - `powerbi/`: a starting Power Query query and data-model guidance.
 
 ## Deployment method
@@ -101,36 +101,43 @@ the `usage-report` cross-tenancy endorsement. It deliberately adds streaming
 decompression, safe ZIP extraction, validation, idempotency, and manifests for
 production operation. See the [Oracle A-Team article](https://www.ateam-oracle.com/automating-the-export-of-oci-finops-open-cost-and-usage-specification-focus-reports-to-object-storage).
 
-## SharePoint and Power BI
+## Object Storage PAR and Power BI
 
 The optional delivery job combines the previous completed UTC calendar week and
-writes `oci_focus_previous_week.csv` plus `oci_focus_manifest.json` to
-SharePoint. It fails closed unless all seven daily copier manifests are complete.
-It uses its own resource principal and needs the same read permission on the
-target bucket.
+writes these stable objects to the same private Object Storage bucket:
+
+```text
+powerbi/oci_focus_previous_week.csv
+powerbi/oci_focus_manifest.json
+powerbi/oci_focus_previous_week.par.json
+```
+
+It fails closed unless all seven daily copier manifests are complete. The CSV is
+uploaded with the OCI SDK upload manager, so large reports use multipart upload.
+The PAR grants time-bound read access to only
+`powerbi/oci_focus_previous_week.csv`; because the object name is stable, the
+same PAR URL keeps working when later weekly runs overwrite that object.
 
 Required environment variables:
 
 ```text
 TARGET_BUCKET TARGET_NAMESPACE(optional)
-MS_TENANT_ID MS_CLIENT_ID MS_CLIENT_SECRET
-SP_HOSTNAME SP_SITE_PATH SP_LIBRARY_NAME SP_FOLDER_PATH(optional)
+PAR_TTL_DAYS(optional, default 90)
+OCI_REGION or OBJECT_STORAGE_ENDPOINT(optional if the SDK endpoint is available)
 ```
-
-For GCC High or DoD, also set `GRAPH_HOST`, `LOGIN_HOST`, and `GRAPH_SCOPE`
-to the appropriate Microsoft cloud endpoints.
 
 Install `delivery/requirements.txt`, then run
 `python focus_to_sharepoint.py --week-start 2026-07-13`. Omit `--week-start` to
-publish the previous completed UTC week. For production, store the Microsoft
-secret in OCI Vault and inject it at runtime. The publisher streams to a
-temporary file and uses Graph upload sessions, so it does not have the 250 MB
-simple-upload limit.
+publish the previous completed UTC week. Use `--rotate-par` only when you need
+to issue a new URL before the stored PAR is near expiry.
 
-In Power BI Desktop, use the SharePoint Folder connector and adapt
-`powerbi/power-query-m.txt`. Cost values should be fixed decimals and dates UTC.
-Do not remove correction rows. Reconcile `lineItem/iscorrection` and
-`lineItem/backReference` in a measure if a netted presentation is required.
+The script prints a JSON manifest containing `powerbi_url`. In Power BI Desktop,
+create a text parameter named `OCI_FOCUS_PAR_URL`, paste that URL, then use
+`powerbi/power-query-m.txt`. Treat the PAR URL like a secret: anyone who has it
+can read the weekly CSV until the PAR expires or is deleted. Cost values should
+be fixed decimals and dates UTC. Do not remove correction rows. Reconcile
+`lineItem/iscorrection` and `lineItem/backReference` in a measure if a netted
+presentation is required.
 
 ## Verify before production
 
