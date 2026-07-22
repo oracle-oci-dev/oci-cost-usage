@@ -21,6 +21,8 @@ weekly CSV to SharePoint.
 
 - `oci-focus-powerbi/function/func.py`: OCI Function copier.
 - `oci-focus-powerbi/delivery/focus_to_sharepoint.py`: weekly SharePoint job.
+- `oci-focus-powerbi/powerbi/power-query-m.txt`: Power BI query; it must use
+  the same published filename as the delivery job.
 - `oci-focus-powerbi/terraform/`: bucket, Function, IAM, and logging setup.
 - `cost-usage-exporter-powerbi-v2.0_TEST.sh`: standalone OCI Usage API exporter.
 
@@ -35,3 +37,8 @@ python3 -m unittest discover -s delivery/tests -v
 
 Use `bash -n` for each shell exporter. Terraform validation requires provider
 initialization first; do not run apply or contact OCI/Microsoft unless asked.
+
+The `v1` and `v1.1` shell exporters are historical test scripts. Prefer
+`cost-usage-exporter-powerbi-v2.0_TEST.sh` for standalone exports and keep any
+future changes focused on the active FOCUS pipeline unless legacy compatibility
+is explicitly requested.

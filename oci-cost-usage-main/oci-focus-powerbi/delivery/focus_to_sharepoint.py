@@ -14,6 +14,7 @@ import io
 import json
 import os
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -33,7 +34,7 @@ def graph_token() -> str:
     body = {
         "client_id": require("MS_CLIENT_ID"),
         "client_secret": require("MS_CLIENT_SECRET"),
-        "scope": os.environ.get("GRAPH_SCOPE", "https://graph.microsoft.com/.default"),
+        "scope": graph_scope(),
         "grant_type": "client_credentials",
     }
     response = requests.post(f"{login_base_url()}/{tenant}/oauth2/v2.0/token", data=body, timeout=30)
@@ -44,9 +45,27 @@ def graph_token() -> str:
 def graph_request(method: str, url: str, token: str, **kwargs):
     headers = {"Authorization": f"Bearer {token}"}
     headers.update(kwargs.pop("headers", {}))
-    response = requests.request(method, url, headers=headers, timeout=120, **kwargs)
-    response.raise_for_status()
-    return response
+    return request_with_retry(lambda: requests.request(method, url, headers=headers, timeout=120, **kwargs))
+
+
+def request_with_retry(send, attempts: int = 5):
+    """Retry Microsoft Graph throttling and transient service failures."""
+    for attempt in range(attempts):
+        try:
+            response = send()
+        except requests.RequestException:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(2**attempt)
+            continue
+        if response.status_code not in {429, 500, 502, 503, 504}:
+            response.raise_for_status()
+            return response
+        if attempt == attempts - 1:
+            response.raise_for_status()
+        retry_after = response.headers.get("Retry-After")
+        time.sleep(int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt)
+    raise RuntimeError("unreachable")
 
 
 def storage_client() -> tuple[object, str]:
@@ -135,13 +154,14 @@ def upload_file(token: str, drive_id: str, path: str, local_path: str, content_t
         offset = 0
         while chunk := source.read(chunk_size):
             end = offset + len(chunk) - 1
-            response = requests.put(
-                upload_url,
-                data=chunk,
-                headers={"Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total}", "Content-Type": content_type},
-                timeout=120,
+            request_with_retry(
+                lambda: requests.put(
+                    upload_url,
+                    data=chunk,
+                    headers={"Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total}", "Content-Type": content_type},
+                    timeout=120,
+                )
             )
-            response.raise_for_status()
             offset = end + 1
 
 
@@ -151,6 +171,24 @@ def graph_base_url() -> str:
 
 def login_base_url() -> str:
     return f"https://{os.environ.get('LOGIN_HOST', 'login.microsoftonline.com').strip()}"
+
+
+def graph_scope() -> str:
+    return os.environ.get("GRAPH_SCOPE", f"https://{os.environ.get('GRAPH_HOST', 'graph.microsoft.com').strip()}/.default")
+
+
+def find_drive(token: str, site_id: str, drive_name: str) -> dict:
+    """Find a document library even when Graph returns multiple pages."""
+    url = f"{graph_base_url()}/v1.0/sites/{site_id}/drives"
+    for _ in range(20):
+        payload = graph_request("GET", url, token).json()
+        drive = next((item for item in payload.get("value", []) if item.get("name", "").casefold() == drive_name.casefold()), None)
+        if drive:
+            return drive
+        url = payload.get("@odata.nextLink")
+        if not url:
+            break
+    raise RuntimeError(f"SharePoint library not found: {drive_name}")
 
 
 def main() -> None:
@@ -167,10 +205,7 @@ def main() -> None:
     token = graph_token()
     site = graph_request("GET", f"{graph_base_url()}/v1.0/sites/{require('SP_HOSTNAME')}:{require('SP_SITE_PATH')}", token).json()
     drive_name = require("SP_LIBRARY_NAME")
-    drives = graph_request("GET", f"{graph_base_url()}/v1.0/sites/{site['id']}/drives", token).json()["value"]
-    drive = next((item for item in drives if item["name"] == drive_name), None)
-    if not drive:
-        raise RuntimeError(f"SharePoint library not found: {drive_name}")
+    drive = find_drive(token, site["id"], drive_name)
     folder = os.environ.get("SP_FOLDER_PATH", "PowerBI/OCI").strip("/")
     prefix = f"{folder}/" if folder else ""
     with tempfile.TemporaryDirectory(prefix="oci-focus-weekly-") as directory:

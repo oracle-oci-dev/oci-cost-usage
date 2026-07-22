@@ -2,7 +2,7 @@
 // This retains correction rows and marks source-file provenance for auditing.
 let
     Source = SharePoint.Files("https://contoso.sharepoint.com/sites/FinOps", [ApiVersion = 15]),
-    FocusFile = Table.SelectRows(Source, each [Name] = "oci_focus_current_month.csv"),
+    FocusFile = Table.SelectRows(Source, each [Name] = "oci_focus_previous_week.csv"),
     Content = FocusFile{0}[Content],
     Csv = Csv.Document(Content, [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
     Promoted = Table.PromoteHeaders(Csv, [PromoteAllScalars = true]),

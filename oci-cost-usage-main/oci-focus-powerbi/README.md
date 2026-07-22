@@ -117,6 +117,9 @@ MS_TENANT_ID MS_CLIENT_ID MS_CLIENT_SECRET
 SP_HOSTNAME SP_SITE_PATH SP_LIBRARY_NAME SP_FOLDER_PATH(optional)
 ```
 
+For GCC High or DoD, also set `GRAPH_HOST`, `LOGIN_HOST`, and `GRAPH_SCOPE`
+to the appropriate Microsoft cloud endpoints.
+
 Install `delivery/requirements.txt`, then run
 `python focus_to_sharepoint.py --week-start 2026-07-13`. Omit `--week-start` to
 publish the previous completed UTC week. For production, store the Microsoft

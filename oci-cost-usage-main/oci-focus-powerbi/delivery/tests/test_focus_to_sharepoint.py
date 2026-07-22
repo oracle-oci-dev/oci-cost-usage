@@ -59,6 +59,43 @@ class CombineCsvTests(unittest.TestCase):
         objects = publisher.completed_day_objects(client, "namespace", "bucket", usage_date)
         self.assertEqual([item.name for item in objects], ["focus/csv/2026/07/13/report.csv"])
 
+    def test_find_drive_follows_graph_pagination(self):
+        original = publisher.graph_request
+        calls = []
+        pages = [
+            {"value": [{"name": "Other"}], "@odata.nextLink": "https://next.example/drives"},
+            {"value": [{"id": "drive-id", "name": "Reports"}]},
+        ]
+        try:
+            def graph_request(method, url, token):
+                calls.append(url)
+                return types.SimpleNamespace(json=lambda: pages.pop(0))
+
+            publisher.graph_request = graph_request
+            drive = publisher.find_drive("token", "site-id", "reports")
+        finally:
+            publisher.graph_request = original
+        self.assertEqual(drive["id"], "drive-id")
+        self.assertEqual(len(calls), 2)
+
+    def test_request_with_retry_retries_throttling(self):
+        original_sleep = publisher.time.sleep
+        attempts = []
+        try:
+            publisher.time.sleep = lambda _: None
+
+            def send():
+                attempts.append(None)
+                if len(attempts) == 1:
+                    return types.SimpleNamespace(status_code=429, headers={}, raise_for_status=lambda: None)
+                return types.SimpleNamespace(status_code=200, headers={}, raise_for_status=lambda: None)
+
+            response = publisher.request_with_retry(send)
+        finally:
+            publisher.time.sleep = original_sleep
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(attempts), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

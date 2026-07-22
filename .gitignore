@@ -1,0 +1,2 @@
+# Terraform provider and module cache; the lockfile is intentionally committed.
+**/.terraform/
